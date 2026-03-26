@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<title>GPX＋ナンバリングピン管理（CSV読込/保存）</title>
+
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+
+<style>
+body { font-family: sans-serif; margin: 10px; }
+#map { height: 450px; margin-top: 10px; }
+
+.number-icon {
+  color: white;
+  border-radius: 50%;
+  width: 26px;
+  height: 26px;
+  text-align: center;
+  line-height: 26px;
+  font-weight: bold;
+  border: 2px solid white;
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  margin-top: 10px;
+}
+th, td {
+  border: 1px solid #aaa;
+  padding: 4px;
+}
+td[contenteditable] {
+  background: #f9f9f9;
+}
+button {
+  padding: 4px 8px;
+  margin-top: 6px;
+}
+</style>
+</head>
+
+<body>
+<h3>GPX+CSV/保存</h3>
+
+GPX読込：
+<input type="file" id="gpxfile" accept=".gpx">
+
+CSV読込：
+<input type="file" id="csvfile" accept=".csv">
+
+<button id="saveCsv">CSV保存</button>
+
+<div id="map"></div>
+
+<h4>ピン一覧（編集可）</h4>
+<table>
+<thead>
+<tr>
+  <th>No</th>
+  <th>時間</th>
+  <th>緯度</th>
+  <th>経度</th>
+  <th>コメント</th>
+  <th>削除</th>
+</tr>
+</thead>
+<tbody id="list"></tbody>
+</table>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet-gpx/1.7.0/gpx.min.js"></script>
+
+<script>
+const map = L.map('map').setView([35.681236, 139.767125], 12);
+
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  attribution: '© OpenStreetMap'
+}).addTo(map);
+
+let gpxLayer = null;
+let pinData = [];
+
+/* ---------- 色 ---------- */
+function getColor(no) {
+  if (/^[0-9]/.test(no)) return '#2A93EE';
+  if (/^A/i.test(no)) return '#E74C3C';
+  if (/^B/i.test(no)) return '#F39C12';
+  if (/^C/i.test(no)) return '#27AE60';
+  return '#7F8C8D';
+}
+
+/* ---------- GPX ---------- */
+document.getElementById('gpxfile').addEventListener('change', e => {
+  const file = e.target.files[0];
+  if (!file) return;
+
+  if (gpxLayer) map.removeLayer(gpxLayer);
+
+  const reader = new FileReader();
+  reader.onload = ev => {
+    gpxLayer = new L.GPX(ev.target.result, {
+      async: true,
+      polyline_options: { color: 'blue', weight: 4 },
+      marker_options: { startIconUrl: null, endIconUrl: null }
+    })
+    .on('loaded', e => map.fitBounds(e.target.getBounds()))
+    .addTo(map);
+  };
+  reader.readAsText(file);
+});
+
+/* ---------- ピン追加 ---------- */
+map.on('click', e => {
+  const marker = L.marker(e.latlng, { draggable: true }).addTo(map);
+
+  marker.bindPopup(`
+    No:<br>
+    <input id="no"><br>
+    時間:<br>
+    <input id="time" type="time"><br>
+    コメント:<br>
+    <input id="memo"><br><br>
+    <button id="save">保存</button>
+  `).openPopup();
+
+  marker.on('popupopen', () => {
+    const el = marker.getPopup().getElement();
+
+    el.querySelector('#save').onclick = () => {
+      const no = el.querySelector('#no').value.trim();
+      const time = el.querySelector('#time').value.trim();
+      const memo = el.querySelector('#memo').value.trim();
+      if (!no) return;
+
+      const icon = L.divIcon({
+        className: 'number-icon',
+        html: `<div style="background:${getColor(no)};width:26px;height:26px;border-radius:50%;">${no}</div>`,
+        iconSize: [26, 26],
+        iconAnchor: [13, 13]
+      });
+
+      marker.setIcon(icon);
+      marker.bindPopup(`<b>${no}</b><br>${time}<br>${memo}`);
+
+      pinData.push({ no, time, memo, marker });
+      marker.on('dragend', updateList);
+      updateList();
+    };
+  });
+});
+
+/* ---------- 一覧 ---------- */
+function updateList() {
+  const tbody = document.getElementById('list');
+  tbody.innerHTML = '';
+
+  pinData.forEach((p, i) => {
+    const ll = p.marker.getLatLng();
+    const tr = document.createElement('tr');
+
+    tr.innerHTML = `
+      <td>${p.no}</td>
+      <td contenteditable="true">${p.time || ''}</td>
+      <td>${ll.lat.toFixed(6)}</td>
+      <td>${ll.lng.toFixed(6)}</td>
+      <td contenteditable="true">${p.memo}</td>
+      <td><button>削除</button></td>
+    `;
+
+    const cells = tr.querySelectorAll('[contenteditable]');
+
+    cells[0].addEventListener('input', e => {
+      p.time = e.target.textContent;
+      p.marker.bindPopup(`<b>${p.no}</b><br>${p.time}<br>${p.memo}`);
+    });
+
+    cells[1].addEventListener('input', e => {
+      p.memo = e.target.textContent;
+      p.marker.bindPopup(`<b>${p.no}</b><br>${p.time}<br>${p.memo}`);
+    });
+
+    tr.querySelector('button').onclick = () => {
+      map.removeLayer(p.marker);
+      pinData.splice(i, 1);
+      updateList();
+    };
+
+    tbody.appendChild(tr);
+  });
+}
+
+/* ---------- CSV保存 ---------- */
+document.getElementById('saveCsv').onclick = () => {
+  if (pinData.length === 0) return;
+
+  const header = 'No,時間,緯度,経度,コメント\n';
+
+  const body = pinData.map(p => {
+    const ll = p.marker.getLatLng();
+    return `"${p.no}","${p.time || ''}",${ll.lat},${ll.lng},"${p.memo.replace(/"/g,'""')}"`;
+  }).join('\n');
+
+  const blob = new Blob(['\uFEFF' + header + body], {
+    type: 'text/csv;charset=utf-8;'
+  });
+
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'pins.csv';
+  a.click();
+};
+
+/* ---------- CSV読込 ---------- */
+document.getElementById('csvfile').addEventListener('change', e => {
+  const file = e.target.files[0];
+  if (!file) return;
+
+  const reader = new FileReader();
+  reader.onload = ev => {
+    const lines = ev.target.result.replace(/\r/g,'').split('\n');
+
+    pinData.forEach(p => map.removeLayer(p.marker));
+    pinData = [];
+
+    lines.slice(1).forEach(line => {
+      if (!line.trim()) return;
+
+      const c = line.match(/(".*?"|[^,]+)(?=\s*,|\s*$)/g);
+      if (!c || c.length < 5) return;
+
+      const no = c[0].replace(/^"|"$/g,'');
+      const time = c[1].replace(/^"|"$/g,'');
+      const lat = parseFloat(c[2]);
+      const lng = parseFloat(c[3]);
+      const memo = c[4].replace(/^"|"$/g,'').replace(/""/g,'"');
+
+      const icon = L.divIcon({
+        className: 'number-icon',
+        html: `<div style="background:${getColor(no)};width:26px;height:26px;border-radius:50%;">${no}</div>`,
+        iconSize: [26, 26],
+        iconAnchor: [13, 13]
+      });
+
+      const marker = L.marker([lat, lng], {
+        draggable: true,
+        icon
+      }).addTo(map);
+
+      marker.bindPopup(`<b>${no}</b><br>${time}<br>${memo}`);
+      marker.on('dragend', updateList);
+
+      pinData.push({ no, time, memo, marker });
+    });
+
+    if (pinData.length) {
+      map.fitBounds(L.featureGroup(pinData.map(p => p.marker)).getBounds().pad(0.2));
+    }
+
+    updateList();
+  };
+  reader.readAsText(file);
+});
+</script>
+</body>
+</html>
